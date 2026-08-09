@@ -8,9 +8,9 @@ function makeStore(seed = {}) {
   const data = { ...seed };
   return {
     data,
-    readTSV: (rel) => (data[rel] || []).slice(),
-    appendTSV: (rel, row) => { (data[rel] = data[rel] || []).push(row); },
-    rewriteTSV: (rel, fn) => {
+    readTSV: async (rel) => (data[rel] || []).slice(),
+    appendTSV: async (rel, row) => { (data[rel] = data[rel] || []).push(row); return true; },
+    rewriteTSV: async (rel, fn) => {
       const before = (data[rel] || []).length;
       data[rel] = fn((data[rel] || []).slice());
       return before - data[rel].length;
@@ -48,18 +48,18 @@ test('addEntry fires onEntryAdded with the plain (unescaped) body, without block
   assert.equal(received.MOOD, '8');
 });
 
-test('listEntries returns newest first and unescapes body/AI_NOTE', () => {
+test('listEntries returns newest first and unescapes body/AI_NOTE', async () => {
   const store = makeStore({ 'spark/journal.tsv': [
     { ID: 'J1', DATE: '2026-08-01', MOOD: '5', ENERGY: '5', TAGS: '-', BODY: tsvEscapeText('first'), AI_NOTE: '-', CREATED_AT: '2026-08-01T00:00:00Z' },
     { ID: 'J2', DATE: '2026-08-02', MOOD: '7', ENERGY: '6', TAGS: '-', BODY: tsvEscapeText('second\nline'), AI_NOTE: '-', CREATED_AT: '2026-08-02T00:00:00Z' },
   ] });
   const client = createJournalClient({ ...store, tsvEscapeText, tsvUnescapeText });
-  const r = client.listEntries();
+  const r = await client.listEntries();
   assert.equal(r.entries[0].BODY, 'second\nline');
   assert.equal(r.stats.total, 2);
 });
 
-test('listEntries computes a 7-day streak correctly', () => {
+test('listEntries computes a 7-day streak correctly', async () => {
   const today = new Date().toISOString().slice(0, 10);
   const yesterday = new Date(Date.now() - 864e5).toISOString().slice(0, 10);
   const store = makeStore({ 'spark/journal.tsv': [
@@ -67,12 +67,12 @@ test('listEntries computes a 7-day streak correctly', () => {
     { ID: 'J2', DATE: today, MOOD: '-', ENERGY: '-', TAGS: '-', BODY: tsvEscapeText('y'), AI_NOTE: '-' },
   ] });
   const client = createJournalClient({ ...store, tsvEscapeText, tsvUnescapeText });
-  assert.equal(client.listEntries().stats.streak, 2);
+  assert.equal((await client.listEntries()).stats.streak, 2);
 });
 
-test('deleteEntry removes the row and reports success:false when nothing matched', () => {
+test('deleteEntry removes the row and reports success:false when nothing matched', async () => {
   const store = makeStore({ 'spark/journal.tsv': [{ ID: 'J1', BODY: '-' }] });
   const client = createJournalClient({ ...store, tsvEscapeText, tsvUnescapeText });
-  assert.equal(client.deleteEntry('J1').success, true);
-  assert.equal(client.deleteEntry('J1').success, false);
+  assert.equal((await client.deleteEntry('J1')).success, true);
+  assert.equal((await client.deleteEntry('J1')).success, false);
 });

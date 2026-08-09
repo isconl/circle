@@ -19,10 +19,13 @@ const manifest = require('../lib/manifest');
 
 const PORT = parseInt(process.env.CIRCLE_PORT || process.env.PORT || '8084', 10);
 const BIND = process.env.CIRCLE_BIND || '127.0.0.1';
-const MEMORY_DIR = process.env.CIRCLE_MEMORY_DIR || process.env.VAULT_MEMORY_DIR || path.join(__dirname, '..', 'memory');
+const VAULT_URL = process.env.VAULT_URL || '';
 const LOGS_DIR = process.env.CIRCLE_LOGS_DIR || path.join(__dirname, '..', 'runtime', 'logs');
-const DIA_DIR = path.join(MEMORY_DIR, 'circle', 'dia');
-const ANALYSIS_FILE = path.join(MEMORY_DIR, 'circle', 'analysis.md');
+// DIA/analysis content is still plain files on circle's own disk, not
+// vault-owned rows -- only TSV data moved to the remote store.
+const LOCAL_DIR = process.env.CIRCLE_LOCAL_DIR || path.join(__dirname, '..', 'memory');
+const DIA_DIR = path.join(LOCAL_DIR, 'circle', 'dia');
+const ANALYSIS_FILE = path.join(LOCAL_DIR, 'circle', 'analysis.md');
 
 function readBody(req) {
   return new Promise((resolve, reject) => {
@@ -55,7 +58,15 @@ async function main() {
   console.log(`  secrets: ${secretsResult.source}, ${secretsResult.count} key(s)`);
 
   const auditLog = createAuditLog({ logsDir: LOGS_DIR });
-  const store = createStore({ memoryDir: MEMORY_DIR, auditLog });
+  if (!VAULT_URL) {
+    console.error('  REFUSING TO START: VAULT_URL is not configured -- circle has no data store without it.');
+    process.exit(1);
+  }
+  const store = createStore({
+    baseUrl: VAULT_URL,
+    getToken: () => process.env.VAULT_TOKEN || secretStore.get('VAULT_TOKEN') || '',
+    auditLog,
+  });
   const readTSV = store.read, appendTSV = store.append, rewriteTSV = store.rewrite;
 
   let analysisDirty = false;
@@ -97,16 +108,16 @@ async function main() {
 
     try {
       if (pathname === '/people' && req.method === 'GET') {
-        return sendJson(res, 200, { people: people.listPeople() });
+        return sendJson(res, 200, { people: await people.listPeople() });
       }
       if (pathname === '/people' && req.method === 'POST') {
         return sendJson(res, 200, await people.upsertPerson(JSON.parse(await readBody(req) || '{}')));
       }
       if (pathname === '/people/remember' && req.method === 'POST') {
-        return sendJson(res, 200, people.setRemember(JSON.parse(await readBody(req) || '{}')));
+        return sendJson(res, 200, await people.setRemember(JSON.parse(await readBody(req) || '{}')));
       }
       if (pathname === '/touch' && req.method === 'POST') {
-        return sendJson(res, 200, people.logTouch(JSON.parse(await readBody(req) || '{}')));
+        return sendJson(res, 200, await people.logTouch(JSON.parse(await readBody(req) || '{}')));
       }
       if (pathname === '/dia' && req.method === 'GET') {
         return sendJson(res, 200, people.readDia(url.searchParams.get('id')));
@@ -115,7 +126,7 @@ async function main() {
         return sendJson(res, 200, people.readAnalysis());
       }
       if (pathname === '/whocan' && req.method === 'GET') {
-        return sendJson(res, 200, people.whoCan(url.searchParams.get('q')));
+        return sendJson(res, 200, await people.whoCan(url.searchParams.get('q')));
       }
       if (pathname === '/chat-import' && req.method === 'POST') {
         return sendJson(res, 200, await chatImport.importChat(JSON.parse(await readBody(req) || '{}')));
@@ -125,22 +136,22 @@ async function main() {
         return sendJson(res, 200, await inbox.addMessage(JSON.parse(await readBody(req) || '{}')));
       }
       if (pathname === '/inbox/update' && req.method === 'POST') {
-        return sendJson(res, 200, inbox.updateMessage(JSON.parse(await readBody(req) || '{}')));
+        return sendJson(res, 200, await inbox.updateMessage(JSON.parse(await readBody(req) || '{}')));
       }
       if (pathname === '/inbox/delete' && req.method === 'POST') {
         const p = JSON.parse(await readBody(req) || '{}');
-        return sendJson(res, 200, inbox.deleteMessage(p.id));
+        return sendJson(res, 200, await inbox.deleteMessage(p.id));
       }
 
       if (pathname === '/journal' && req.method === 'GET') {
-        return sendJson(res, 200, journal.listEntries());
+        return sendJson(res, 200, await journal.listEntries());
       }
       if (pathname === '/journal' && req.method === 'POST') {
         return sendJson(res, 200, await journal.addEntry(JSON.parse(await readBody(req) || '{}')));
       }
       if (pathname === '/journal/delete' && req.method === 'POST') {
         const p = JSON.parse(await readBody(req) || '{}');
-        return sendJson(res, 200, journal.deleteEntry(p.id));
+        return sendJson(res, 200, await journal.deleteEntry(p.id));
       }
     } catch (e) {
       return sendJson(res, 400, { success: false, error: String(e.message || e) });

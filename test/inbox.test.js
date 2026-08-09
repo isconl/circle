@@ -7,9 +7,9 @@ function makeStore(seed = {}) {
   const data = { ...seed };
   return {
     data,
-    readTSV: (rel) => (data[rel] || []).slice(),
-    appendTSV: (rel, row) => { (data[rel] = data[rel] || []).push(row); },
-    rewriteTSV: (rel, fn) => {
+    readTSV: async (rel) => (data[rel] || []).slice(),
+    appendTSV: async (rel, row) => { (data[rel] = data[rel] || []).push(row); return true; },
+    rewriteTSV: async (rel, fn) => {
       const before = (data[rel] || []).length;
       data[rel] = fn((data[rel] || []).slice());
       return before - data[rel].length;
@@ -66,19 +66,19 @@ test('addMessage fires onCaptured without blocking the response', async () => {
   assert.ok(called);
 });
 
-test('updateMessage edits status/tag/comment and throws for an unknown id', () => {
+test('updateMessage edits status/tag/comment and throws for an unknown id', async () => {
   const store = makeStore({ 'scope/inbox.tsv': [{ ID: 'I001', STATUS: 'new', TAG: '-', COMMENT: '-' }] });
   const client = createInboxClient({ ...store });
-  client.updateMessage({ id: 'I001', status: 'read', comment: 'will reply tomorrow' });
+  await client.updateMessage({ id: 'I001', status: 'read', comment: 'will reply tomorrow' });
   assert.equal(store.data['scope/inbox.tsv'][0].STATUS, 'read');
   assert.equal(store.data['scope/inbox.tsv'][0].COMMENT, 'will reply tomorrow');
-  assert.throws(() => client.updateMessage({ id: 'nope', status: 'read' }));
+  await assert.rejects(() => client.updateMessage({ id: 'nope', status: 'read' }));
 });
 
-test('deleteMessage removes the row', () => {
+test('deleteMessage removes the row', async () => {
   const store = makeStore({ 'scope/inbox.tsv': [{ ID: 'I001' }] });
   const client = createInboxClient({ ...store });
-  const r = client.deleteMessage('I001');
+  const r = await client.deleteMessage('I001');
   assert.equal(r.success, true);
   assert.equal(store.data['scope/inbox.tsv'].length, 0);
 });

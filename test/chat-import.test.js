@@ -8,9 +8,9 @@ function makeStore(seed = {}) {
   const data = { ...seed };
   return {
     data,
-    readTSV: (rel) => (data[rel] || []).slice(),
-    appendTSV: (rel, row) => { (data[rel] = data[rel] || []).push(row); },
-    rewriteTSV: (rel, fn) => {
+    readTSV: async (rel) => (data[rel] || []).slice(),
+    appendTSV: async (rel, row) => { (data[rel] = data[rel] || []).push(row); return true; },
+    rewriteTSV: async (rel, fn) => {
       const before = (data[rel] || []).length;
       data[rel] = fn((data[rel] || []).slice());
       return before - data[rel].length;

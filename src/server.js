@@ -42,7 +42,7 @@ function sendJson(res, status, obj) {
 }
 
 function checkAuth(req) {
-  const token = process.env.CIRCLE_TOKEN || process.env.ISCONL_TOKEN || '';
+  const token = process.env.CIRCLE_TOKEN || process.env.ISCONL_TOKEN || secretStore.get('CIRCLE_TOKEN') || '';
   if (!token) return false;
   const auth = req.headers.authorization || '';
   const provided = auth.startsWith('Bearer ') ? auth.slice(7) : '';
@@ -86,7 +86,7 @@ async function main() {
 
   const chatImport = createChatImportClient({ readTSV, appendTSV, rewriteTSV, auditLog, markAnalysisDirty });
 
-  const tokenConfigured = !!(process.env.CIRCLE_TOKEN || process.env.ISCONL_TOKEN);
+  const tokenConfigured = !!(process.env.CIRCLE_TOKEN || process.env.ISCONL_TOKEN || secretStore.get('CIRCLE_TOKEN'));
   const isLoopback = ['127.0.0.1', '::1', 'localhost'].includes(BIND);
   if (!isLoopback && !tokenConfigured) {
     console.error('  REFUSING TO BIND: no CIRCLE_TOKEN/ISCONL_TOKEN configured and BIND is not loopback.');

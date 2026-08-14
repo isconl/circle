@@ -15,6 +15,7 @@ const { createPeopleClient } = require('../lib/people');
 const { createJournalClient } = require('../lib/journal');
 const { createInboxClient } = require('../lib/inbox');
 const { createChatImportClient } = require('../lib/chat-import');
+const career = require('../lib/career');
 const manifest = require('../lib/manifest');
 
 const PORT = parseInt(process.env.CIRCLE_PORT || process.env.PORT || '8084', 10);
@@ -127,6 +128,17 @@ async function main() {
       }
       if (pathname === '/whocan' && req.method === 'GET') {
         return sendJson(res, 200, await people.whoCan(url.searchParams.get('q')));
+      }
+      if (pathname === '/career' && req.method === 'GET') {
+        // Career context for the active org (or every org, if ?all=1) --
+        // circle owns this file/YAML read (lib/career.js); other engines
+        // (scope's decisions/corporate clients) reach it over HTTP rather
+        // than reading career/ off their own disk.
+        const ctx = career.load(LOCAL_DIR);
+        if (url.searchParams.get('all') === '1') return sendJson(res, 200, ctx);
+        const { activeOrg, orgName, role, people: ppl, decisions, risks, playbooks, doctrine, available } = ctx;
+        return sendJson(res, 200, { activeOrg, orgName, role, available,
+          orgs: ctx.orgs, people: ppl, decisions, risks, playbooks, doctrine });
       }
       if (pathname === '/chat-import' && req.method === 'POST') {
         return sendJson(res, 200, await chatImport.importChat(JSON.parse(await readBody(req) || '{}')));

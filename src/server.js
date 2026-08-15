@@ -161,6 +161,9 @@ async function main() {
       if (pathname === '/journal' && req.method === 'POST') {
         return sendJson(res, 200, await journal.addEntry(JSON.parse(await readBody(req) || '{}')));
       }
+      if (pathname === '/journal/update' && req.method === 'POST') {
+        return sendJson(res, 200, await journal.updateEntry(JSON.parse(await readBody(req) || '{}')));
+      }
       if (pathname === '/journal/delete' && req.method === 'POST') {
         const p = JSON.parse(await readBody(req) || '{}');
         return sendJson(res, 200, await journal.deleteEntry(p.id));

@@ -158,4 +158,8 @@ test('importChat reports updated:false with a note when the DIA generator has no
   const r = await client.importChat({ content: Buffer.from(text, 'utf8').toString('base64'), fileName: 'chat.txt' });
   assert.equal(r.updated[0].updated, false);
   assert.ok(r.updated[0].note);
+  // Matching alone is a real touch -- no AI provider shouldn't drop it.
+  assert.equal(store.data['circle/interactions.tsv'].length, 1);
+  assert.match(store.data['circle/interactions.tsv'][0].SUMMARY, /no AI summary yet/);
+  assert.equal(store.data['circle/people.tsv'][0].LAST_TOUCH, '2026-07-28');
 });

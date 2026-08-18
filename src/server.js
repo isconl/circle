@@ -85,7 +85,15 @@ async function main() {
   // needs spark's AI routing, not wired yet.
   const inbox = createInboxClient({ readTSV, appendTSV, rewriteTSV, auditLog, markAnalysisDirty });
 
-  const chatImport = createChatImportClient({ readTSV, appendTSV, rewriteTSV, auditLog, markAnalysisDirty });
+  // Raw archive filed to OneDrive via vault (lib/store.js's uploadFile, wired
+  // 18 Aug once vault's /onedrive/upload route could take binary content).
+  // generateDiaFromMessages stays at the default -- needs spark's AI
+  // routing, not wired yet.
+  const CHAT_ARCHIVE_FOLDER = process.env.CIRCLE_CHAT_ARCHIVE_FOLDER || 'Sconl/Core/Apex/Circle/chat-archives';
+  const chatImport = createChatImportClient({
+    readTSV, appendTSV, rewriteTSV, auditLog, markAnalysisDirty,
+    fileArchive: (buf, fileName) => store.uploadFile(CHAT_ARCHIVE_FOLDER, fileName, buf, 'application/zip'),
+  });
 
   const tokenConfigured = !!(process.env.CIRCLE_TOKEN || process.env.ISCONL_TOKEN || secretStore.get('CIRCLE_TOKEN'));
   const isLoopback = ['127.0.0.1', '::1', 'localhost'].includes(BIND);

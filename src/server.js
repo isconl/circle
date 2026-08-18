@@ -90,8 +90,14 @@ async function main() {
   // generateDiaFromMessages stays at the default -- needs spark's AI
   // routing, not wired yet.
   const CHAT_ARCHIVE_FOLDER = process.env.CIRCLE_CHAT_ARCHIVE_FOLDER || 'Sconl/Core/Apex/Circle/chat-archives';
+  // Speaker names that mean "Architect himself", so his own messages get
+  // excluded from matching instead of showing up as an unmatched speaker
+  // (found live 18 Aug: "Architect" had 26 unmatched messages in a real import
+  // because this was never configured -- parseChatExport() always accepted
+  // an operatorNames list, nothing ever passed one in).
+  const OPERATOR_NAMES = (process.env.CIRCLE_OPERATOR_NAMES || 'Architect').split(',').map(s => s.trim()).filter(Boolean);
   const chatImport = createChatImportClient({
-    readTSV, appendTSV, rewriteTSV, auditLog, markAnalysisDirty,
+    readTSV, appendTSV, rewriteTSV, auditLog, markAnalysisDirty, operatorNames: OPERATOR_NAMES,
     fileArchive: (buf, fileName) => store.uploadFile(CHAT_ARCHIVE_FOLDER, fileName, buf, 'application/zip'),
   });
 

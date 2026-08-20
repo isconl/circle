@@ -129,7 +129,7 @@ test('load() caches on file mtime/size and reloads once a source file changes', 
 
 test('writeOrgStub creates a new org and org.yaml stub, and load() picks it up', () => {
   const dir = writeFixture();
-  const r = writeOrgStub(dir, { id: 'viva-valentia', name: 'Viva Valentia', discoveryDate: '2026-08-20' });
+  const r = writeOrgStub(dir, { id: 'viva-valentia', name: 'Viva Valentia', discoveryDate: '2026-08-20', folder: '2026-viva-valentia' });
   assert.equal(r.created, true);
   assert.equal(r.id, 'viva-valentia');
 
@@ -145,6 +145,7 @@ test('writeOrgStub creates a new org and org.yaml stub, and load() picks it up',
   assert.equal(found.enabled, true);
   assert.equal(found.daysWorked, 0);
   assert.equal(found.discoveryDate, '2026-08-20');
+  assert.equal(found.onedriveFolder, '2026-viva-valentia');
 
   // Existing orgs (acme, former-co) must still be present -- a write must
   // never drop what was already there.

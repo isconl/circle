@@ -76,6 +76,19 @@ test('unzipTextFiles extracts .txt members and skips others', () => {
   assert.equal(out[0].text, 'hello world');
 });
 
+test('unzipTextFiles recurses into nested zip members (WhatsApp "export all chats" is a zip of zips)', () => {
+  const inner1 = buildZip([{ name: '_chat.txt', data: Buffer.from('chat one', 'utf8') }]);
+  const inner2 = buildZip([{ name: '_chat.txt', data: Buffer.from('chat two', 'utf8') }]);
+  const outer = buildZip([
+    { name: 'WhatsApp Chat with Fred.zip', data: inner1 },
+    { name: 'WhatsApp Chat with Joel.zip', data: inner2 },
+  ]);
+  const out = unzipTextFiles(outer);
+  assert.equal(out.length, 2);
+  assert.ok(out.some(f => f.name.includes('Fred') && f.text === 'chat one'));
+  assert.ok(out.some(f => f.name.includes('Joel') && f.text === 'chat two'));
+});
+
 test('unzipTextFiles returns an empty array for a non-zip buffer', () => {
   assert.deepEqual(unzipTextFiles(Buffer.from('not a zip')), []);
 });
@@ -149,6 +162,43 @@ test('importChat reports an unmatched speaker without inventing a new Circle per
   const r = await client.importChat({ content: Buffer.from(text, 'utf8').toString('base64'), fileName: 'chat.txt' });
   assert.equal(r.unmatched[0].speaker, 'A Total Stranger');
   assert.equal(store.data['circle/people.tsv'].length, 0);
+});
+
+test('importChat persists interleaved in/out messages to scope/inbox.tsv, PERSON_ID/DIRECTION tagged, for the matched person', async () => {
+  const store = makeStore({ 'circle/people.tsv': [{ ID: 'fred', NAME: 'Fred Kariuki', LAST_TOUCH: '-' }] });
+  const client = createChatImportClient({ ...store });
+  const text = [
+    '28/07/2026, 09:40 - Fred Kariuki: hello there',
+    '28/07/2026, 09:41 - You: hi Fred',
+  ].join('\n');
+  const r = await client.importChat({ content: Buffer.from(text, 'utf8').toString('base64'), fileName: 'chat.txt' });
+  assert.equal(r.newMessages, 2);
+  const rows = store.data['scope/inbox.tsv'];
+  assert.equal(rows.length, 2);
+  assert.equal(rows.find(x => x.DIRECTION === 'in').PERSON_ID, 'fred');
+  assert.equal(rows.find(x => x.DIRECTION === 'in').SENDER, 'Fred Kariuki');
+  assert.equal(rows.find(x => x.DIRECTION === 'out').PERSON_ID, 'fred');
+  assert.equal(rows.find(x => x.DIRECTION === 'out').SENDER, '-');
+});
+
+test('importChat keeps each zip member as its own conversation, not joined, and re-running the same archive does not duplicate messages', async () => {
+  const store = makeStore({ 'circle/people.tsv': [
+    { ID: 'fred', NAME: 'Fred Kariuki', LAST_TOUCH: '-' },
+    { ID: 'joel', NAME: 'Joel Tambaur', LAST_TOUCH: '-' },
+  ] });
+  const client = createChatImportClient({ ...store });
+  const zip = buildZip([
+    { name: 'WhatsApp Chat with Fred Kariuki.txt', data: Buffer.from('28/07/2026, 09:40 - Fred Kariuki: hi', 'utf8') },
+    { name: 'WhatsApp Chat with Joel Tambaur.txt', data: Buffer.from('29/07/2026, 10:00 - Joel Tambaur: hey', 'utf8') },
+  ]);
+  const first = await client.importChat({ content: zip.toString('base64'), fileName: 'all.zip' });
+  assert.equal(first.files, 2);
+  assert.equal(first.newMessages, 2);
+  assert.equal(store.data['scope/inbox.tsv'].length, 2);
+
+  const second = await client.importChat({ content: zip.toString('base64'), fileName: 'all.zip' });
+  assert.equal(second.newMessages, 0);
+  assert.equal(store.data['scope/inbox.tsv'].length, 2);
 });
 
 test('importChat reports updated:false with a note when the DIA generator has no provider, but still files/parses successfully', async () => {

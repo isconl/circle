@@ -17,7 +17,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { load } = require('../lib/career');
+const { load, writeOrgStub } = require('../lib/career');
 
 function writeFixture() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'circle-career-test-'));
@@ -125,4 +125,51 @@ test('load() caches on file mtime/size and reloads once a source file changes', 
 
   const second = load(dir);
   assert.equal(second.people.length, 2);
+});
+
+test('writeOrgStub creates a new org and org.yaml stub, and load() picks it up', () => {
+  const dir = writeFixture();
+  const r = writeOrgStub(dir, { id: 'viva-valentia', name: 'Viva Valentia', discoveryDate: '2026-08-20', folder: '2026-viva-valentia' });
+  assert.equal(r.created, true);
+  assert.equal(r.id, 'viva-valentia');
+
+  const orgYaml = fs.readFileSync(path.join(dir, 'career', 'orgs', 'viva-valentia', 'org.yaml'), 'utf8');
+  assert.match(orgYaml, /^id: viva-valentia$/m);
+  assert.match(orgYaml, /^discovery_date: 2026-08-20$/m);
+
+  const ctx = load(dir);
+  const found = ctx.orgs.find(o => o.id === 'viva-valentia');
+  assert.ok(found, 'newly written org should appear in load() output');
+  assert.equal(found.name, 'Viva Valentia');
+  assert.equal(found.status, 'prospect');
+  assert.equal(found.enabled, true);
+  assert.equal(found.daysWorked, 0);
+  assert.equal(found.discoveryDate, '2026-08-20');
+  assert.equal(found.onedriveFolder, '2026-viva-valentia');
+
+  // Existing orgs (acme, former-co) must still be present -- a write must
+  // never drop what was already there.
+  assert.ok(ctx.orgs.find(o => o.id === 'acme'));
+  assert.ok(ctx.orgs.find(o => o.id === 'former-co'));
+});
+
+test('writeOrgStub is a no-op (not an overwrite) for an id that already exists', () => {
+  const dir = writeFixture();
+  const r = writeOrgStub(dir, { id: 'acme', name: 'Should Not Overwrite' });
+  assert.equal(r.created, false);
+  assert.equal(r.reason, 'already known');
+
+  const ctx = load(dir);
+  const acme = ctx.orgs.find(o => o.id === 'acme');
+  assert.equal(acme.name, 'Acme Manufacturing Ltd');
+});
+
+test('writeOrgStub works from scratch when career/_active.yaml does not exist yet', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'circle-career-fresh-'));
+  const r = writeOrgStub(dir, { id: 'new-org', name: 'New Org', discoveryDate: '2026-08-20' });
+  assert.equal(r.created, true);
+
+  const ctx = load(dir);
+  assert.equal(ctx.orgs.length, 1);
+  assert.equal(ctx.orgs[0].id, 'new-org');
 });

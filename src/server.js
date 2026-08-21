@@ -154,6 +154,24 @@ async function main() {
         return sendJson(res, 200, { activeOrg, orgName, role, available,
           orgs: ctx.orgs, people: ppl, decisions, risks, playbooks, doctrine });
       }
+      if (pathname === '/career/orgs/discover' && req.method === 'POST') {
+        // BC26082006 -- vault's corporate-discovery pass POSTs here after
+        // scanning Sconl/Core/Axial/Visionary/Corporate/ on OneDrive. circle
+        // owns the actual write (career.writeOrgStub); idempotent per-org, so
+        // a re-post of an already-known id is a no-op, not an error.
+        const body = JSON.parse(await readBody(req) || '{}');
+        const created = [];
+        const skipped = [];
+        for (const org of (body.orgs || [])) {
+          try {
+            const r = career.writeOrgStub(LOCAL_DIR, org);
+            (r.created ? created : skipped).push(r.id);
+          } catch (e) {
+            skipped.push(org.id || '(unknown)');
+          }
+        }
+        return sendJson(res, 200, { created, skipped });
+      }
       if (pathname === '/chat-import' && req.method === 'POST') {
         return sendJson(res, 200, await chatImport.importChat(JSON.parse(await readBody(req) || '{}')));
       }

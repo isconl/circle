@@ -36,6 +36,23 @@ test('upsertPerson creates a new person with a slugged id and defaults to the so
   assert.equal(store.data['circle/people.tsv'][0].CIRCLE, 'social');
 });
 
+test('upsertPerson creates and updates EMAIL (BM26082011, Gmail sender matching)', async () => {
+  const store = makeStore();
+  const client = createPeopleClient({ ...store });
+  const created = await client.upsertPerson({ name: 'Fred Kariuki', email: 'Fred@Example.com' });
+  assert.equal(store.data['circle/people.tsv'][0].EMAIL, 'Fred@Example.com');
+
+  await client.upsertPerson({ id: created.id, name: 'Fred Kariuki', email: 'fred.new@example.com' });
+  assert.equal(store.data['circle/people.tsv'][0].EMAIL, 'fred.new@example.com');
+});
+
+test('upsertPerson leaves an existing EMAIL untouched on an update that omits it', async () => {
+  const store = makeStore({ 'circle/people.tsv': [{ ID: 'fred', NAME: 'Fred', EMAIL: 'fred@example.com' }] });
+  const client = createPeopleClient({ ...store });
+  await client.upsertPerson({ id: 'fred', name: 'Fred Kariuki' });
+  assert.equal(store.data['circle/people.tsv'][0].EMAIL, 'fred@example.com');
+});
+
 test('upsertPerson refuses to silently overwrite an existing id when creating (no p.id passed)', async () => {
   const store = makeStore({ 'circle/people.tsv': [{ ID: 'fred', NAME: 'Fred' }] });
   const client = createPeopleClient({ ...store });

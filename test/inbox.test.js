@@ -50,6 +50,24 @@ test('addMessage matches an existing person by name and does not create a duplic
   assert.equal(store.data['circle/interactions.tsv'][0].PERSON_ID, 'fred');
 });
 
+test('addMessage sets PERSON_ID and DIRECTION on the inbox row itself, not just the interaction', async () => {
+  const store = makeStore({ 'circle/people.tsv': [{ ID: 'fred', NAME: 'Fred Kariuki' }] });
+  const client = createInboxClient({ ...store });
+  await client.addMessage({ body: 'hi', sender: 'Fred Kariuki' });
+  const inboxRow = store.data['scope/inbox.tsv'][0];
+  assert.equal(inboxRow.PERSON_ID, 'fred');
+  assert.equal(inboxRow.DIRECTION, 'in');
+});
+
+test('addMessage defaults PERSON_ID to "-" and DIRECTION to "in" when no sender matches', async () => {
+  const store = makeStore();
+  const client = createInboxClient({ ...store });
+  await client.addMessage({ body: 'hi' });
+  const inboxRow = store.data['scope/inbox.tsv'][0];
+  assert.equal(inboxRow.PERSON_ID, '-');
+  assert.equal(inboxRow.DIRECTION, 'in');
+});
+
 test('addMessage does not touch the Circle for the operator\'s own sender ("iSconl") or no sender', async () => {
   const store = makeStore();
   const client = createInboxClient({ ...store });

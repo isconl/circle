@@ -9,7 +9,7 @@ const path = require('path');
 const fs = require('fs');
 const secretStore = require('../lib/secrets');
 const { createAuditLog } = require('../lib/audit');
-const { createStore } = require('../lib/store');
+const { createStore, defaultRequest } = require('../lib/store');
 const { tsvEscapeText, tsvUnescapeText } = require('../lib/tsv');
 const { createPeopleClient } = require('../lib/people');
 const { createJournalClient } = require('../lib/journal');
@@ -75,20 +75,57 @@ async function main() {
 
   const people = createPeopleClient({
     readTSV, appendTSV, rewriteTSV, auditLog, markAnalysisDirty,
+    diaDir: DIA_DIR,
     readDiaFile: (id) => readFileSafe(path.join(DIA_DIR, `${id}.md`)),
     readAnalysisFile: () => readFileSafe(ANALYSIS_FILE),
   });
 
   const journal = createJournalClient({ readTSV, appendTSV, rewriteTSV, auditLog, tsvEscapeText, tsvUnescapeText });
 
-  // generateDia left at inbox.js's own default (a no-op) -- real generation
-  // needs spark's AI routing, not wired yet.
-  const inbox = createInboxClient({ readTSV, appendTSV, rewriteTSV, auditLog, markAnalysisDirty });
+  // BM26082601: dossier regeneration, wired to spark's AI routing.
+  const SPARK_URL = process.env.SPARK_URL || '';
+  const getSparkToken = () => process.env.SPARK_TOKEN || secretStore.get('SPARK_TOKEN') || '';
+  const sparkRequest = SPARK_URL ? defaultRequest(SPARK_URL, getSparkToken) : null;
+  // Cheap in-process burst guard (not a queue/debounce config, no
+  // cross-restart persistence needed -- see the row's own "rate
+  // consideration, resolved" note): skip re-triggering for the same person
+  // within 60s of their last trigger, covers e.g. a chat-archive import
+  // matching 20 messages to one person in one pass.
+  const lastDiaTrigger = new Map();
+  const DIA_TRIGGER_COOLDOWN_MS = 60 * 1000;
+  function shouldTriggerDia(personId) {
+    const now = Date.now();
+    const last = lastDiaTrigger.get(personId) || 0;
+    if (now - last < DIA_TRIGGER_COOLDOWN_MS) return false;
+    lastDiaTrigger.set(personId, now);
+    return true;
+  }
+  async function regenerateDia({ personId, personName, interactions }) {
+    if (!sparkRequest) return { ok: false, error: 'SPARK_URL not configured' };
+    if (!shouldTriggerDia(personId)) return { ok: false, error: 'skipped, within cooldown window' };
+    const r = await sparkRequest('POST', '/generate-dia', {
+      personName,
+      existingSections: people.currentDiaSections(personId),
+      interactions,
+    });
+    if (r.status !== 200) return { ok: false, error: (r.data && r.data.error) || `spark returned ${r.status}` };
+    await people.writeDiaFile(personId, r.data);
+    return { ok: true };
+  }
+
+  // generateDia: inbox.js's hook only receives the person ID (per its own
+  // call site, inbox.js:87) -- resolve name + full interaction history here.
+  const inbox = createInboxClient({
+    readTSV, appendTSV, rewriteTSV, auditLog, markAnalysisDirty,
+    generateDia: async (personId) => {
+      const [peopleRows, interactions] = await Promise.all([readTSV('circle/people.tsv'), readTSV('circle/interactions.tsv')]);
+      const person = peopleRows.find(p => p.ID === personId);
+      return regenerateDia({ personId, personName: person && person.NAME, interactions: interactions.filter(i => i.PERSON_ID === personId) });
+    },
+  });
 
   // Raw archive filed to OneDrive via vault (lib/store.js's uploadFile, wired
   // 18 Aug once vault's /onedrive/upload route could take binary content).
-  // generateDiaFromMessages stays at the default -- needs spark's AI
-  // routing, not wired yet.
   const CHAT_ARCHIVE_FOLDER = process.env.CIRCLE_CHAT_ARCHIVE_FOLDER || 'Sconl/Core/Apex/Circle/chat-archives';
   // Speaker names that mean "Architect himself", so his own messages get
   // excluded from matching instead of showing up as an unmatched speaker
@@ -99,6 +136,13 @@ async function main() {
   const chatImport = createChatImportClient({
     readTSV, appendTSV, rewriteTSV, auditLog, markAnalysisDirty, operatorNames: OPERATOR_NAMES,
     fileArchive: (buf, fileName) => store.uploadFile(CHAT_ARCHIVE_FOLDER, fileName, buf, 'application/zip'),
+    // generateDiaFromMessages: chat-import.js's call site passes (m.person,
+    // m.msgs) -- m.person is a circle/people.tsv row, m.msgs is
+    // {date, who, text}[]. Convert to interaction-shaped summaries.
+    generateDiaFromMessages: async (person, msgs) => {
+      const interactions = (msgs || []).map(m => ({ DATE: m.date, CHANNEL: 'chat-import', SUMMARY: String(m.text || '').slice(0, 160) }));
+      return regenerateDia({ personId: person.ID, personName: person.NAME, interactions });
+    },
   });
 
   const tokenConfigured = !!(process.env.CIRCLE_TOKEN || process.env.ISCONL_TOKEN || secretStore.get('CIRCLE_TOKEN'));

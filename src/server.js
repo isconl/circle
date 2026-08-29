@@ -15,6 +15,7 @@ const { createPeopleClient } = require('../lib/people');
 const { createJournalClient } = require('../lib/journal');
 const { createInboxClient } = require('../lib/inbox');
 const { createChatImportClient } = require('../lib/chat-import');
+const { createTeamsClient } = require('../lib/teams');
 const career = require('../lib/career');
 const manifest = require('../lib/manifest');
 
@@ -145,6 +146,8 @@ async function main() {
     },
   });
 
+  const teams = createTeamsClient({ readTSV, appendTSV, rewriteTSV, auditLog });
+
   const tokenConfigured = !!(process.env.CIRCLE_TOKEN || process.env.ISCONL_TOKEN || secretStore.get('CIRCLE_TOKEN'));
   const isLoopback = ['127.0.0.1', '::1', 'localhost'].includes(BIND);
   if (!isLoopback && !tokenConfigured) {
@@ -243,6 +246,26 @@ async function main() {
       if (pathname === '/journal/delete' && req.method === 'POST') {
         const p = JSON.parse(await readBody(req) || '{}');
         return sendJson(res, 200, await journal.deleteEntry(p.id));
+      }
+
+      // Teams OS routes (BM26082802)
+      if (pathname === '/teams' && req.method === 'GET') {
+        return sendJson(res, 200, await teams.snapshot());
+      }
+      if (pathname === '/teams/save' && req.method === 'POST') {
+        return sendJson(res, 200, await teams.saveTeam(JSON.parse(await readBody(req) || '{}')));
+      }
+      if (pathname === '/teams/member' && req.method === 'POST') {
+        return sendJson(res, 200, await teams.saveMember(JSON.parse(await readBody(req) || '{}')));
+      }
+      if (pathname === '/teams/member/remove' && req.method === 'POST') {
+        return sendJson(res, 200, await teams.removeMember(JSON.parse(await readBody(req) || '{}')));
+      }
+      if (pathname === '/teams/work' && req.method === 'POST') {
+        return sendJson(res, 200, await teams.saveWork(JSON.parse(await readBody(req) || '{}')));
+      }
+      if (pathname === '/teams/work/move' && req.method === 'POST') {
+        return sendJson(res, 200, await teams.moveWork(JSON.parse(await readBody(req) || '{}')));
       }
     } catch (e) {
       return sendJson(res, 400, { success: false, error: String(e.message || e) });

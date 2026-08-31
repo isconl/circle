@@ -79,6 +79,15 @@ async function main() {
     diaDir: DIA_DIR,
     readDiaFile: (id) => readFileSafe(path.join(DIA_DIR, `${id}.md`)),
     readAnalysisFile: () => readFileSafe(ANALYSIS_FILE),
+    // FM26082605: same shape as inbox.js's hook below (regenerateDia is a
+    // function declaration, hoisted, and only actually called well after
+    // sparkRequest/shouldTriggerDia are assigned -- safe despite textually
+    // preceding their definitions here).
+    generateDia: async (personId) => {
+      const [peopleRows, interactions] = await Promise.all([readTSV('circle/people.tsv'), readTSV('circle/interactions.tsv')]);
+      const person = peopleRows.find(p => p.ID === personId);
+      return regenerateDia({ personId, personName: person && person.NAME, interactions: interactions.filter(i => i.PERSON_ID === personId) });
+    },
   });
 
   const journal = createJournalClient({ readTSV, appendTSV, rewriteTSV, auditLog, tsvEscapeText, tsvUnescapeText });
@@ -183,6 +192,20 @@ async function main() {
       }
       if (pathname === '/dia' && req.method === 'GET') {
         return sendJson(res, 200, people.readDia(url.searchParams.get('id')));
+      }
+      // FM26082801: admin on-demand trigger -- regenerateDia() itself was
+      // already real/working, just unreachable outside a real inbox/
+      // chat-import event. Same personId->interactions resolution as
+      // inbox.js's hook above.
+      if (pathname.startsWith('/people/') && pathname.endsWith('/regenerate-dia') && req.method === 'POST') {
+        const personId = pathname.slice('/people/'.length, -'/regenerate-dia'.length);
+        const [peopleRows, interactions] = await Promise.all([readTSV('circle/people.tsv'), readTSV('circle/interactions.tsv')]);
+        const person = peopleRows.find(p => p.ID === personId);
+        if (!person) return sendJson(res, 404, { ok: false, error: 'person not found' });
+        return sendJson(res, 200, await regenerateDia({
+          personId, personName: person.NAME,
+          interactions: interactions.filter(i => i.PERSON_ID === personId),
+        }));
       }
       if (pathname === '/analysis' && req.method === 'GET') {
         return sendJson(res, 200, people.readAnalysis());

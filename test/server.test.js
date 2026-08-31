@@ -127,6 +127,28 @@ test('people: create, list, touch, remember', async () => {
   } finally { server.close(); cleanup(); }
 });
 
+test('FM26082801: POST /people/:id/regenerate-dia is reachable and resolves the person before calling spark', async () => {
+  const { server, port, cleanup } = await startServer();
+  const auth = { Authorization: 'Bearer test-static-token', 'Content-Type': 'application/json' };
+  try {
+    const create = await fetch(`http://127.0.0.1:${port}/people`, { method: 'POST', headers: auth,
+      body: JSON.stringify({ name: 'Ada Wanjiru', circle: 'professional' }) });
+    const { id } = await create.json();
+
+    const missing = await fetch(`http://127.0.0.1:${port}/people/no-such-person/regenerate-dia`, { method: 'POST', headers: auth });
+    assert.equal(missing.status, 404);
+
+    // No SPARK_URL configured in test env -- regenerateDia() itself
+    // degrades gracefully (ok:false), which is enough to confirm the route
+    // and person-lookup wiring work without needing a real spark server.
+    const res = await fetch(`http://127.0.0.1:${port}/people/${id}/regenerate-dia`, { method: 'POST', headers: auth });
+    const body = await res.json();
+    assert.equal(res.status, 200);
+    assert.equal(body.ok, false);
+    assert.match(body.error, /SPARK_URL/);
+  } finally { server.close(); cleanup(); }
+});
+
 test('inbox: capturing a message from an unknown sender auto-adds them to the Circle', async () => {
   const { server, port, cleanup } = await startServer();
   const auth = { Authorization: 'Bearer test-static-token', 'Content-Type': 'application/json' };

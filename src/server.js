@@ -154,6 +154,7 @@ async function main() {
   const chatImport = createChatImportClient({
     readTSV, appendTSV, rewriteTSV, auditLog, markAnalysisDirty, operatorNames: OPERATOR_NAMES,
     fileArchive: (buf, fileName) => store.uploadFile(CHAT_ARCHIVE_FOLDER, fileName, buf, 'application/zip'),
+    upsertPerson: (p) => people.upsertPerson(p),
     // generateDiaFromMessages: chat-import.js's call site passes (m.person,
     // m.msgs) -- m.person is a circle/people.tsv row, m.msgs is
     // {date, who, text}[]. Convert to interaction-shaped summaries.
@@ -256,6 +257,9 @@ async function main() {
       }
       if (pathname === '/chat-import' && req.method === 'POST') {
         return sendJson(res, 200, await chatImport.importChat(JSON.parse(await readBody(req) || '{}')));
+      }
+      if (pathname === '/chat-import/add-sender' && req.method === 'POST') {
+        return sendJson(res, 200, await chatImport.addUnmatchedSender(JSON.parse(await readBody(req) || '{}')));
       }
 
       if (pathname === '/inbox' && req.method === 'POST') {

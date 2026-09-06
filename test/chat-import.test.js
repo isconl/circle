@@ -162,6 +162,49 @@ test('importChat reports an unmatched speaker without inventing a new Circle per
   const r = await client.importChat({ content: Buffer.from(text, 'utf8').toString('base64'), fileName: 'chat.txt' });
   assert.equal(r.unmatched[0].speaker, 'A Total Stranger');
   assert.equal(store.data['circle/people.tsv'].length, 0);
+  assert.ok(r.importId, 'importChat should return an importId for a later add-sender call');
+});
+
+function fakeUpsertPerson(store) {
+  return async (p) => {
+    const id = String(p.name).toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+    (store.data['circle/people.tsv'] = store.data['circle/people.tsv'] || []).push(
+      { ID: id, NAME: p.name, CIRCLE: p.circle || 'social', ROLE: p.role || '-', LAST_TOUCH: '-' });
+    return { success: true, id };
+  };
+}
+
+test('BM26090503: addUnmatchedSender creates the person and settles their messages into the inbox, without re-parsing the archive', async () => {
+  const store = makeStore({ 'circle/people.tsv': [] });
+  const client = createChatImportClient({ ...store, upsertPerson: fakeUpsertPerson(store) });
+  const text = [
+    '28/07/2026, 09:40 - Happiness Awuor: hey there',
+    '28/07/2026, 09:41 - You: hi Happiness',
+  ].join('\n');
+  const imported = await client.importChat({ content: Buffer.from(text, 'utf8').toString('base64'), fileName: 'chat.txt' });
+  assert.equal(imported.unmatched[0].speaker, 'Happiness Awuor');
+  assert.equal(store.data['scope/inbox.tsv'], undefined);
+
+  const r = await client.addUnmatchedSender({
+    importId: imported.importId, speaker: 'Happiness Awuor', name: 'Happiness Awuor', circle: 'social', role: 'friend', cadence: '30',
+  });
+  assert.equal(r.success, true);
+  assert.equal(r.messages, 1); // only the incoming ("in") message counts toward m.msgs
+  const people = store.data['circle/people.tsv'];
+  assert.equal(people.length, 1);
+  assert.equal(people[0].NAME, 'Happiness Awuor');
+  const rows = store.data['scope/inbox.tsv'];
+  assert.equal(rows.length, 2); // interleaved in + out, same as the matched-path test above
+  assert.equal(rows.find(x => x.DIRECTION === 'in').PERSON_ID, people[0].ID);
+});
+
+test('BM26090503: addUnmatchedSender refuses a stale/unknown importId', async () => {
+  const store = makeStore({ 'circle/people.tsv': [] });
+  const client = createChatImportClient({ ...store, upsertPerson: fakeUpsertPerson(store) });
+  await assert.rejects(
+    () => client.addUnmatchedSender({ importId: 'not-a-real-id', speaker: 'Ghost', name: 'Ghost', circle: 'social' }),
+    /expired|re-run/i,
+  );
 });
 
 test('importChat persists interleaved in/out messages to scope/inbox.tsv, PERSON_ID/DIRECTION tagged, for the matched person', async () => {

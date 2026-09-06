@@ -43,7 +43,14 @@ function sendJson(res, status, obj) {
   res.end(JSON.stringify(obj));
 }
 
+let _devAuthBypassLog = null; // set once main() creates auditLog; used by ISCONL_DEV_NO_AUTH (BS26090501)
+
 function checkAuth(req) {
+  // BS26090501: dev-only, loopback-gated (enforced at boot below), env-only -- never request-derived.
+  if (process.env.ISCONL_DEV_NO_AUTH === '1') {
+    if (_devAuthBypassLog) _devAuthBypassLog.log('dev_auth_bypass', { engine: 'circle', path: req.url });
+    return true;
+  }
   const token = process.env.CIRCLE_TOKEN || process.env.ISCONL_TOKEN || secretStore.get('CIRCLE_TOKEN') || '';
   if (!token) return false;
   const auth = req.headers.authorization || '';
@@ -60,6 +67,7 @@ async function main() {
   console.log(`  secrets: ${secretsResult.source}, ${secretsResult.count} key(s)`);
 
   const auditLog = createAuditLog({ logsDir: LOGS_DIR });
+  _devAuthBypassLog = auditLog;
   if (!VAULT_URL) {
     console.error('  REFUSING TO START: VAULT_URL is not configured -- circle has no data store without it.');
     process.exit(1);
@@ -146,6 +154,7 @@ async function main() {
   const chatImport = createChatImportClient({
     readTSV, appendTSV, rewriteTSV, auditLog, markAnalysisDirty, operatorNames: OPERATOR_NAMES,
     fileArchive: (buf, fileName) => store.uploadFile(CHAT_ARCHIVE_FOLDER, fileName, buf, 'application/zip'),
+    upsertPerson: (p) => people.upsertPerson(p),
     // generateDiaFromMessages: chat-import.js's call site passes (m.person,
     // m.msgs) -- m.person is a circle/people.tsv row, m.msgs is
     // {date, who, text}[]. Convert to interaction-shaped summaries.
@@ -159,6 +168,10 @@ async function main() {
 
   const tokenConfigured = !!(process.env.CIRCLE_TOKEN || process.env.ISCONL_TOKEN || secretStore.get('CIRCLE_TOKEN'));
   const isLoopback = ['127.0.0.1', '::1', 'localhost'].includes(BIND);
+  if (process.env.ISCONL_DEV_NO_AUTH === '1' && !isLoopback) {
+    console.error('  REFUSING TO BIND: ISCONL_DEV_NO_AUTH is set but BIND is not loopback -- dev auth bypass is loopback-only.');
+    process.exit(1);
+  }
   if (!isLoopback && !tokenConfigured) {
     console.error('  REFUSING TO BIND: no CIRCLE_TOKEN/ISCONL_TOKEN configured and BIND is not loopback.');
     process.exit(1);
@@ -244,6 +257,9 @@ async function main() {
       }
       if (pathname === '/chat-import' && req.method === 'POST') {
         return sendJson(res, 200, await chatImport.importChat(JSON.parse(await readBody(req) || '{}')));
+      }
+      if (pathname === '/chat-import/add-sender' && req.method === 'POST') {
+        return sendJson(res, 200, await chatImport.addUnmatchedSender(JSON.parse(await readBody(req) || '{}')));
       }
 
       if (pathname === '/inbox' && req.method === 'POST') {

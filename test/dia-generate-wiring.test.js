@@ -1,13 +1,16 @@
 'use strict';
 /** BM26082601: writeDiaFile()'s splice-only-3.2/3.3/3.4 contract, and
  *  currentDiaSections()'s extraction for the "existing analysis" prompt
- *  context. Uses a real temp dir since writeDiaFile is plain
- *  fs.writeFileSync by design (see people.js's own comment), not injected. */
+ *  context.
+ *
+ * BM26090602: DIA dossiers moved off circle's local disk onto vault's
+ * encrypted raw-blob store -- readDiaFile/writeDia are now async, injected
+ * functions. This file backs them with a plain in-memory Map (the same
+ * shape circle/src/server.js's real wiring gets from store.rawRead/
+ * rawWrite over HTTP), not fs, so this test no longer needs a real temp
+ * dir. */
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const fs = require('fs');
-const os = require('os');
-const path = require('path');
 const { createPeopleClient } = require('../lib/people');
 
 function makeStore(seed = {}) {
@@ -20,11 +23,11 @@ function makeStore(seed = {}) {
   };
 }
 
-function makeClient(diaDir, seed) {
+function makeClient(dia, seed) {
   return createPeopleClient({
     ...makeStore(seed),
-    diaDir,
-    readDiaFile: (id) => { try { return fs.readFileSync(path.join(diaDir, `${id}.md`), 'utf8'); } catch { return null; } },
+    readDiaFile: async (id) => (Object.prototype.hasOwnProperty.call(dia, id) ? dia[id] : null),
+    writeDia: async (id, content) => { dia[id] = content; },
   });
 }
 
@@ -36,11 +39,11 @@ const SECTIONS = {
 };
 
 test('writeDiaFile starts from the SDIAIF v2.1 skeleton when no dossier exists yet', async () => {
-  const diaDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dia-test-'));
-  const client = makeClient(diaDir, { 'circle/people.tsv': [{ ID: 'p1', NAME: 'Test Person' }] });
+  const dia = {};
+  const client = makeClient(dia, { 'circle/people.tsv': [{ ID: 'p1', NAME: 'Test Person' }] });
   const result = await client.writeDiaFile('p1', SECTIONS);
   assert.ok(result.success);
-  const content = fs.readFileSync(path.join(diaDir, 'p1.md'), 'utf8');
+  const content = dia['p1'];
   assert.match(content, /### 3\.2 STRENGTHS/);
   assert.match(content, /Ships fast \[evidence: 2026-08-01 call\]/);
   assert.match(content, /### 3\.3 WEAKNESSES & BLIND SPOTS/);
@@ -51,7 +54,6 @@ test('writeDiaFile starts from the SDIAIF v2.1 skeleton when no dossier exists y
 });
 
 test('writeDiaFile splices into an existing dossier without touching other sections', async () => {
-  const diaDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dia-test-'));
   const existing = [
     '# DIA -- Existing Person',
     '',
@@ -76,11 +78,11 @@ test('writeDiaFile splices into an existing dossier without touching other secti
     'This log must also survive untouched.',
     '',
   ].join('\n');
-  fs.writeFileSync(path.join(diaDir, 'p2.md'), existing);
+  const dia = { p2: existing };
 
-  const client = makeClient(diaDir, { 'circle/people.tsv': [{ ID: 'p2', NAME: 'Existing Person' }] });
+  const client = makeClient(dia, { 'circle/people.tsv': [{ ID: 'p2', NAME: 'Existing Person' }] });
   await client.writeDiaFile('p2', SECTIONS);
-  const content = fs.readFileSync(path.join(diaDir, 'p2.md'), 'utf8');
+  const content = dia['p2'];
 
   assert.match(content, /This section must survive untouched\./);
   assert.match(content, /This log must also survive untouched\./);
@@ -91,26 +93,26 @@ test('writeDiaFile splices into an existing dossier without touching other secti
 });
 
 test('currentDiaSections returns the joined 3.2/3.3/3.4 text for an existing dossier', async () => {
-  const diaDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dia-test-'));
-  fs.writeFileSync(path.join(diaDir, 'p3.md'), [
-    '### 3.2 STRENGTHS', '', '- reliable', '',
-    '### 3.3 WEAKNESSES & BLIND SPOTS', '', '- impatient', '',
-    '### 3.4 PERSONALITY TRAITS', '', '- curious', '',
-  ].join('\n'));
-  const client = makeClient(diaDir, {});
-  const text = client.currentDiaSections('p3');
+  const dia = {
+    p3: [
+      '### 3.2 STRENGTHS', '', '- reliable', '',
+      '### 3.3 WEAKNESSES & BLIND SPOTS', '', '- impatient', '',
+      '### 3.4 PERSONALITY TRAITS', '', '- curious', '',
+    ].join('\n'),
+  };
+  const client = makeClient(dia, {});
+  const text = await client.currentDiaSections('p3');
   assert.match(text, /reliable/);
   assert.match(text, /impatient/);
   assert.match(text, /curious/);
 });
 
 test('currentDiaSections returns empty string for a person with no dossier yet', async () => {
-  const diaDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dia-test-'));
-  const client = makeClient(diaDir, {});
-  assert.equal(client.currentDiaSections('nobody'), '');
+  const client = makeClient({}, {});
+  assert.equal(await client.currentDiaSections('nobody'), '');
 });
 
-test('writeDiaFile throws without diaDir configured', async () => {
+test('writeDiaFile throws without writeDia configured', async () => {
   const client = createPeopleClient({ ...makeStore() });
-  await assert.rejects(() => client.writeDiaFile('p1', SECTIONS), /diaDir/);
+  await assert.rejects(() => client.writeDiaFile('p1', SECTIONS), /writeDia/);
 });

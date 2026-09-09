@@ -112,10 +112,12 @@ test('listPeople computes dueIn from cadence and last touch, and -1 (overdue) wh
   assert.ok(list.find(p => p.ID === 'b').dueIn < 0, 'overdue by cadence math');
 });
 
-test('readDia rejects a malformed id and returns empty content when nothing is on file', () => {
-  const client = createPeopleClient({ ...makeStore(), readDiaFile: () => null });
-  assert.throws(() => client.readDia('bad id!'));
-  assert.equal(client.readDia('taylor').content, '');
+test('readDia rejects a malformed id and returns empty content when nothing is on file', async () => {
+  // BM26090602: readDiaFile is now async (vault-backed, not fs) -- readDia
+  // itself is async too, so both assertions await.
+  const client = createPeopleClient({ ...makeStore(), readDiaFile: async () => null });
+  await assert.rejects(() => client.readDia('bad id!'));
+  assert.equal((await client.readDia('taylor')).content, '');
 });
 
 test('whoCan scores role/note text hits, capability hits higher, and throws on an empty query', async () => {
@@ -124,7 +126,7 @@ test('whoCan scores role/note text hits, capability hits higher, and throws on a
     'circle/capabilities.tsv': [{ PERSON_ID: 'taylor', CAPABILITY: 'kubernetes', EVIDENCE: 'ran the migration' }],
     'circle/graph.tsv': [],
   });
-  const client = createPeopleClient({ ...store, readDiaFile: () => '' });
+  const client = createPeopleClient({ ...store, readDiaFile: async () => '' });
   const r = await client.whoCan('kubernetes');
   assert.equal(r.direct[0].id, 'taylor');
   await assert.rejects(() => client.whoCan(''));
@@ -139,7 +141,31 @@ test('whoCan surfaces an adjacent (one-hop) person via the graph when they are n
     'circle/capabilities.tsv': [],
     'circle/graph.tsv': [{ FROM_ID: 'amy', TO_ID: 'taylor', REL: 'colleague', NOTE: '-' }],
   });
-  const client = createPeopleClient({ ...store, readDiaFile: () => '' });
+  const client = createPeopleClient({ ...store, readDiaFile: async () => '' });
   const r = await client.whoCan('kubernetes');
   assert.ok(r.adjacent.some(a => a.id === 'amy'));
+});
+
+// BM26090602: DIA dossiers now round-trip through an injected vault-backed
+// readDiaFile/writeDia pair instead of fs -- confirms writeDiaFile splices
+// into whatever readDiaFile returns and calls writeDia with the result, and
+// that currentDiaSections reads back through the same async path.
+test('writeDiaFile splices sections into the skeleton via the injected async readDiaFile/writeDia pair', async () => {
+  const written = {};
+  const store = makeStore({ 'circle/people.tsv': [{ ID: 'taylor-test', NAME: 'Taylor Testperson' }] });
+  const client = createPeopleClient({
+    ...store,
+    readDiaFile: async (id) => written[id] || null,
+    writeDia: async (id, content) => { written[id] = content; },
+  });
+  const r = await client.writeDiaFile('taylor-test', {
+    strengths: [{ text: 'clear writer', evidence: 'weekly briefs' }],
+    weaknesses: [], personalityObserved: [], personalityInferred: [],
+  });
+  assert.equal(r.success, true);
+  assert.match(written['taylor-test'], /clear writer/);
+  assert.match(written['taylor-test'], /Taylor Testperson/);
+
+  const sections = await client.currentDiaSections('taylor-test');
+  assert.match(sections, /clear writer/);
 });

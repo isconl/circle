@@ -6,7 +6,6 @@
 
 const http = require('http');
 const path = require('path');
-const fs = require('fs');
 const secretStore = require('../lib/secrets');
 const { createAuditLog } = require('../lib/audit');
 const { createStore, defaultRequest } = require('../lib/store');
@@ -23,11 +22,13 @@ const PORT = parseInt(process.env.CIRCLE_PORT || process.env.PORT || '8084', 10)
 const BIND = process.env.CIRCLE_BIND || '127.0.0.1';
 const VAULT_URL = process.env.VAULT_URL || '';
 const LOGS_DIR = process.env.CIRCLE_LOGS_DIR || path.join(__dirname, '..', 'runtime', 'logs');
-// DIA/analysis content is still plain files on circle's own disk, not
-// vault-owned rows -- only TSV data moved to the remote store.
+// LOCAL_DIR still backs career.js's org YAML files (unrelated, separate
+// gap, not this row's job) -- DIA dossiers and analysis.md moved off it
+// onto vault's encrypted raw-blob store, BM26090602 (see people.js's
+// readDiaFile/writeDia wiring below).
 const LOCAL_DIR = process.env.CIRCLE_LOCAL_DIR || path.join(__dirname, '..', 'memory');
-const DIA_DIR = path.join(LOCAL_DIR, 'circle', 'dia');
-const ANALYSIS_FILE = path.join(LOCAL_DIR, 'circle', 'analysis.md');
+const DIA_COLLECTION_PREFIX = 'circle/dia';
+const ANALYSIS_COLLECTION = 'circle/analysis.md';
 
 function readBody(req) {
   return new Promise((resolve, reject) => {
@@ -43,7 +44,14 @@ function sendJson(res, status, obj) {
   res.end(JSON.stringify(obj));
 }
 
+let _devAuthBypassLog = null; // set once main() creates auditLog; used by ISCONL_DEV_NO_AUTH (BS26090501)
+
 function checkAuth(req) {
+  // BS26090501: dev-only, loopback-gated (enforced at boot below), env-only -- never request-derived.
+  if (process.env.ISCONL_DEV_NO_AUTH === '1') {
+    if (_devAuthBypassLog) _devAuthBypassLog.log('dev_auth_bypass', { engine: 'circle', path: req.url });
+    return true;
+  }
   const token = process.env.CIRCLE_TOKEN || process.env.ISCONL_TOKEN || secretStore.get('CIRCLE_TOKEN') || '';
   if (!token) return false;
   const auth = req.headers.authorization || '';
@@ -51,15 +59,12 @@ function checkAuth(req) {
   return provided.length === token.length && provided === token;
 }
 
-function readFileSafe(fp) {
-  try { return fs.readFileSync(fp, 'utf8'); } catch { return null; }
-}
-
 async function main() {
   const secretsResult = await secretStore.init();
   console.log(`  secrets: ${secretsResult.source}, ${secretsResult.count} key(s)`);
 
   const auditLog = createAuditLog({ logsDir: LOGS_DIR });
+  _devAuthBypassLog = auditLog;
   if (!VAULT_URL) {
     console.error('  REFUSING TO START: VAULT_URL is not configured -- circle has no data store without it.');
     process.exit(1);
@@ -76,9 +81,13 @@ async function main() {
 
   const people = createPeopleClient({
     readTSV, appendTSV, rewriteTSV, auditLog, markAnalysisDirty,
-    diaDir: DIA_DIR,
-    readDiaFile: (id) => readFileSafe(path.join(DIA_DIR, `${id}.md`)),
-    readAnalysisFile: () => readFileSafe(ANALYSIS_FILE),
+    // BM26090602: DIA dossiers and analysis.md read/written through vault's
+    // encrypted raw-blob store (GET/PUT /vault-raw/:path), the same
+    // mechanism vault already exposes for other non-tabular content --
+    // not circle's own local disk any more.
+    readDiaFile: async (id) => (await store.rawRead(`${DIA_COLLECTION_PREFIX}/${id}.md`)) || null,
+    writeDia: async (id, content) => { await store.rawWrite(`${DIA_COLLECTION_PREFIX}/${id}.md`, content); },
+    readAnalysisFile: async () => (await store.rawRead(ANALYSIS_COLLECTION)) || null,
     // FM26082605: same shape as inbox.js's hook below (regenerateDia is a
     // function declaration, hoisted, and only actually called well after
     // sparkRequest/shouldTriggerDia are assigned -- safe despite textually
@@ -115,7 +124,7 @@ async function main() {
     if (!shouldTriggerDia(personId)) return { ok: false, error: 'skipped, within cooldown window' };
     const r = await sparkRequest('POST', '/generate-dia', {
       personName,
-      existingSections: people.currentDiaSections(personId),
+      existingSections: await people.currentDiaSections(personId),
       interactions,
     });
     if (r.status !== 200) return { ok: false, error: (r.data && r.data.error) || `spark returned ${r.status}` };
@@ -146,6 +155,7 @@ async function main() {
   const chatImport = createChatImportClient({
     readTSV, appendTSV, rewriteTSV, auditLog, markAnalysisDirty, operatorNames: OPERATOR_NAMES,
     fileArchive: (buf, fileName) => store.uploadFile(CHAT_ARCHIVE_FOLDER, fileName, buf, 'application/zip'),
+    upsertPerson: (p) => people.upsertPerson(p),
     // generateDiaFromMessages: chat-import.js's call site passes (m.person,
     // m.msgs) -- m.person is a circle/people.tsv row, m.msgs is
     // {date, who, text}[]. Convert to interaction-shaped summaries.
@@ -159,6 +169,10 @@ async function main() {
 
   const tokenConfigured = !!(process.env.CIRCLE_TOKEN || process.env.ISCONL_TOKEN || secretStore.get('CIRCLE_TOKEN'));
   const isLoopback = ['127.0.0.1', '::1', 'localhost'].includes(BIND);
+  if (process.env.ISCONL_DEV_NO_AUTH === '1' && !isLoopback) {
+    console.error('  REFUSING TO BIND: ISCONL_DEV_NO_AUTH is set but BIND is not loopback -- dev auth bypass is loopback-only.');
+    process.exit(1);
+  }
   if (!isLoopback && !tokenConfigured) {
     console.error('  REFUSING TO BIND: no CIRCLE_TOKEN/ISCONL_TOKEN configured and BIND is not loopback.');
     process.exit(1);
@@ -173,6 +187,24 @@ async function main() {
     }
     if (pathname === '/manifest' && req.method === 'GET') {
       return sendJson(res, 200, manifest);
+    }
+
+    // BM26090602: the inbound webhook a recipient's hosted HTML brief calls
+    // to post a response. Deliberately OUTSIDE checkAuth's CIRCLE_TOKEN
+    // gate -- the caller is an external recipient with no bearer token at
+    // all, per the row's own design ("a single-purpose, per-brief token
+    // embedded in that week's unique share link -- not a general API
+    // key"). The per-brief token IS the auth here; teams.recordInboundReply
+    // verifies it (unknown/revoked/expired -> rejected) before anything is
+    // written, so this route can sit ahead of the general gate safely.
+    if (pathname === '/webhook/brief-response' && req.method === 'POST') {
+      let body = {};
+      try { body = JSON.parse(await readBody(req) || '{}'); } catch { return sendJson(res, 400, { ok: false, error: 'bad JSON body' }); }
+      if (!String(body.token || '').trim() || !String(body.message || '').trim()) {
+        return sendJson(res, 400, { ok: false, error: 'body must be {"token": "...", "message": "..."}' });
+      }
+      const r = await teams.recordInboundReply({ token: body.token, body: body.message });
+      return sendJson(res, r.ok ? 200 : 403, r);
     }
 
     if (!checkAuth(req)) return sendJson(res, 404, { error: 'Not Found' });
@@ -191,7 +223,7 @@ async function main() {
         return sendJson(res, 200, await people.logTouch(JSON.parse(await readBody(req) || '{}')));
       }
       if (pathname === '/dia' && req.method === 'GET') {
-        return sendJson(res, 200, people.readDia(url.searchParams.get('id')));
+        return sendJson(res, 200, await people.readDia(url.searchParams.get('id')));
       }
       // FM26082801: admin on-demand trigger -- regenerateDia() itself was
       // already real/working, just unreachable outside a real inbox/
@@ -208,7 +240,7 @@ async function main() {
         }));
       }
       if (pathname === '/analysis' && req.method === 'GET') {
-        return sendJson(res, 200, people.readAnalysis());
+        return sendJson(res, 200, await people.readAnalysis());
       }
       if (pathname === '/whocan' && req.method === 'GET') {
         return sendJson(res, 200, await people.whoCan(url.searchParams.get('q')));
@@ -244,6 +276,9 @@ async function main() {
       }
       if (pathname === '/chat-import' && req.method === 'POST') {
         return sendJson(res, 200, await chatImport.importChat(JSON.parse(await readBody(req) || '{}')));
+      }
+      if (pathname === '/chat-import/add-sender' && req.method === 'POST') {
+        return sendJson(res, 200, await chatImport.addUnmatchedSender(JSON.parse(await readBody(req) || '{}')));
       }
 
       if (pathname === '/inbox' && req.method === 'POST') {
@@ -290,6 +325,28 @@ async function main() {
       if (pathname === '/teams/work/move' && req.method === 'POST') {
         return sendJson(res, 200, await teams.moveWork(JSON.parse(await readBody(req) || '{}')));
       }
+
+      // BM26090602: Teams/Channels webhook bridge, admin/operator side --
+      // internal callers only (behind checkAuth above), mirroring the same
+      // request shape as the other /teams/* routes.
+      if (pathname === '/teams/channel' && req.method === 'POST') {
+        return sendJson(res, 200, await teams.ensureRecipientChannel(JSON.parse(await readBody(req) || '{}')));
+      }
+      if (pathname === '/teams/messages' && req.method === 'GET') {
+        return sendJson(res, 200, { messages: await teams.channelMessages(url.searchParams.get('teamId')) });
+      }
+      if (pathname === '/teams/message' && req.method === 'POST') {
+        return sendJson(res, 200, await teams.postMessage(JSON.parse(await readBody(req) || '{}')));
+      }
+      if (pathname === '/teams/brief-token' && req.method === 'POST') {
+        return sendJson(res, 200, await teams.issueBriefToken(JSON.parse(await readBody(req) || '{}')));
+      }
+      // Combined outbound step (channel + token + message in one call) --
+      // the hook a future brief-send flow calls once it exists; see
+      // teams.js's sendBriefToChannel() doc comment.
+      if (pathname === '/teams/send-brief' && req.method === 'POST') {
+        return sendJson(res, 200, await teams.sendBriefToChannel(JSON.parse(await readBody(req) || '{}')));
+      }
     } catch (e) {
       return sendJson(res, 400, { success: false, error: String(e.message || e) });
     }
@@ -301,7 +358,7 @@ async function main() {
     server.listen(PORT, BIND, () => {
       const actualPort = server.address().port;
       console.log(`  circle listening on ${BIND}:${actualPort}`);
-      resolve({ server, store, people, journal, inbox, chatImport, auditLog, secretStore, port: actualPort });
+      resolve({ server, store, people, journal, inbox, chatImport, teams, auditLog, secretStore, port: actualPort });
     });
   });
 }

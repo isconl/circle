@@ -261,6 +261,16 @@ async function main() {
       if (pathname === '/chat-import/add-sender' && req.method === 'POST') {
         return sendJson(res, 200, await chatImport.addUnmatchedSender(JSON.parse(await readBody(req) || '{}')));
       }
+      // BM26091205: an unmatched speaker's fuzzy suggestions (attached to
+      // each /chat-import response's unmatched[].suggestions) resolve to
+      // one of these two -- confirm links to the existing contact, dismiss
+      // remembers not to suggest that pair again. Never automatic.
+      if (pathname === '/chat-import/confirm-suggestion' && req.method === 'POST') {
+        return sendJson(res, 200, await chatImport.confirmMatchSuggestion(JSON.parse(await readBody(req) || '{}')));
+      }
+      if (pathname === '/chat-import/dismiss-suggestion' && req.method === 'POST') {
+        return sendJson(res, 200, await chatImport.dismissMatchSuggestion(JSON.parse(await readBody(req) || '{}')));
+      }
 
       if (pathname === '/inbox' && req.method === 'POST') {
         return sendJson(res, 200, await inbox.addMessage(JSON.parse(await readBody(req) || '{}')));

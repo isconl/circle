@@ -233,6 +233,39 @@ test('chat-import: plain-text export matches a known person and logs the touch',
   } finally { server.close(); cleanup(); }
 });
 
+test('BM26091205: chat-import surfaces a fuzzy suggestion, and confirm-suggestion links the existing person over HTTP end-to-end', async () => {
+  const { server, port, cleanup } = await startServer();
+  const auth = { Authorization: 'Bearer test-static-token', 'Content-Type': 'application/json' };
+  try {
+    await fetch(`http://127.0.0.1:${port}/people`, { method: 'POST', headers: auth, body: JSON.stringify({ id: 'taylor', name: 'Taylor Kariuki' }) });
+    const text = '28/07/2026, 09:40 - Tailor Kariuki: hello there'; // near-miss, not an exact/substring match
+    const imported = await (await fetch(`http://127.0.0.1:${port}/chat-import`, { method: 'POST', headers: auth,
+      body: JSON.stringify({ content: Buffer.from(text, 'utf8').toString('base64'), fileName: 'chat.txt' }) })).json();
+    assert.equal(imported.unmatched[0].suggestions[0].personId, 'taylor');
+
+    const confirmed = await (await fetch(`http://127.0.0.1:${port}/chat-import/confirm-suggestion`, { method: 'POST', headers: auth,
+      body: JSON.stringify({ importId: imported.importId, speaker: 'Tailor Kariuki', personId: 'taylor' }) })).json();
+    assert.equal(confirmed.success, true);
+    assert.equal(confirmed.id, 'taylor');
+  } finally { server.close(); cleanup(); }
+});
+
+test('BM26091205: dismiss-suggestion over HTTP is remembered on the next import', async () => {
+  const { server, port, cleanup } = await startServer();
+  const auth = { Authorization: 'Bearer test-static-token', 'Content-Type': 'application/json' };
+  try {
+    await fetch(`http://127.0.0.1:${port}/people`, { method: 'POST', headers: auth, body: JSON.stringify({ id: 'taylor', name: 'Taylor Kariuki' }) });
+    const dismissed = await (await fetch(`http://127.0.0.1:${port}/chat-import/dismiss-suggestion`, { method: 'POST', headers: auth,
+      body: JSON.stringify({ speaker: 'Tailor Kariuki', personId: 'taylor' }) })).json();
+    assert.equal(dismissed.success, true);
+
+    const text = '28/07/2026, 09:40 - Tailor Kariuki: hello there';
+    const imported = await (await fetch(`http://127.0.0.1:${port}/chat-import`, { method: 'POST', headers: auth,
+      body: JSON.stringify({ content: Buffer.from(text, 'utf8').toString('base64'), fileName: 'chat.txt' }) })).json();
+    assert.deepEqual(imported.unmatched[0].suggestions, []);
+  } finally { server.close(); cleanup(); }
+});
+
 test('the audit log recorded requests made during this test run', async () => {
   const { server, port, auditLog, cleanup } = await startServer();
   const auth = { Authorization: 'Bearer test-static-token', 'Content-Type': 'application/json' };

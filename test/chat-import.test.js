@@ -207,6 +207,78 @@ test('BM26090503: addUnmatchedSender refuses a stale/unknown importId', async ()
   );
 });
 
+// -- BM26091205: fuzzy dossier/import-data matching (suggest-and-confirm) --
+
+test('BM26091205: an unmatched speaker carries fuzzy suggestions against existing near-miss contacts', async () => {
+  const store = makeStore({ 'circle/people.tsv': [{ ID: 'taylor', NAME: 'Taylor Kariuki', LAST_TOUCH: '-' }] });
+  const client = createChatImportClient({ ...store });
+  const text = '28/07/2026, 09:40 - Tayler Kariuki: hey there'; // typo'd version of the existing contact's name
+  const imported = await client.importChat({ content: Buffer.from(text, 'utf8').toString('base64'), fileName: 'chat.txt' });
+  assert.equal(imported.unmatched.length, 1);
+  assert.equal(imported.unmatched[0].suggestions[0].personId, 'taylor');
+});
+
+test('BM26091205: no suggestion is offered once nothing is close enough (a genuinely new person)', async () => {
+  const store = makeStore({ 'circle/people.tsv': [{ ID: 'taylor', NAME: 'Taylor Kariuki', LAST_TOUCH: '-' }] });
+  const client = createChatImportClient({ ...store });
+  const text = '28/07/2026, 09:40 - Completely Different Name: hey there';
+  const imported = await client.importChat({ content: Buffer.from(text, 'utf8').toString('base64'), fileName: 'chat.txt' });
+  assert.deepEqual(imported.unmatched[0].suggestions, []);
+});
+
+test('BM26091205: confirmMatchSuggestion links the unmatched speaker\'s messages to the EXISTING person, creating nobody new', async () => {
+  const store = makeStore({ 'circle/people.tsv': [{ ID: 'taylor', NAME: 'Taylor Kariuki', LAST_TOUCH: '-' }] });
+  const client = createChatImportClient({ ...store });
+  const text = [
+    '28/07/2026, 09:40 - Tayler Kariuki: hey there',
+    '28/07/2026, 09:41 - You: hi',
+  ].join('\n');
+  const imported = await client.importChat({ content: Buffer.from(text, 'utf8').toString('base64'), fileName: 'chat.txt' });
+
+  const r = await client.confirmMatchSuggestion({ importId: imported.importId, speaker: 'Tayler Kariuki', personId: 'taylor' });
+  assert.equal(r.success, true);
+  assert.equal(store.data['circle/people.tsv'].length, 1); // still just the one contact -- nobody new created
+  const rows = store.data['scope/inbox.tsv'];
+  assert.ok(rows.some(x => x.PERSON_ID === 'taylor' && x.DIRECTION === 'in'));
+});
+
+test('BM26091205: confirmMatchSuggestion refuses an unknown personId', async () => {
+  const store = makeStore({ 'circle/people.tsv': [{ ID: 'taylor', NAME: 'Taylor Kariuki', LAST_TOUCH: '-' }] });
+  const client = createChatImportClient({ ...store });
+  const text = '28/07/2026, 09:40 - Tayler Kariuki: hey there';
+  const imported = await client.importChat({ content: Buffer.from(text, 'utf8').toString('base64'), fileName: 'chat.txt' });
+  await assert.rejects(
+    () => client.confirmMatchSuggestion({ importId: imported.importId, speaker: 'Tayler Kariuki', personId: 'nobody' }),
+    /no contact/i,
+  );
+});
+
+test('BM26091205: dismissMatchSuggestion records the dismissal and it is excluded from the next import\'s suggestions', async () => {
+  const store = makeStore({ 'circle/people.tsv': [{ ID: 'taylor', NAME: 'Taylor Kariuki', LAST_TOUCH: '-' }] });
+  const client = createChatImportClient({ ...store });
+  const text = '28/07/2026, 09:40 - Tayler Kariuki: hey there';
+
+  const first = await client.importChat({ content: Buffer.from(text, 'utf8').toString('base64'), fileName: 'chat.txt' });
+  assert.equal(first.unmatched[0].suggestions[0].personId, 'taylor');
+
+  const d = await client.dismissMatchSuggestion({ speaker: 'Tayler Kariuki', personId: 'taylor' });
+  assert.equal(d.success, true);
+  assert.equal(store.data['circle/dismissed-matches.tsv'].length, 1);
+
+  const second = await client.importChat({ content: Buffer.from(text, 'utf8').toString('base64'), fileName: 'chat.txt' });
+  assert.deepEqual(second.unmatched[0].suggestions, []);
+});
+
+test('BM26091205: a dismissal is scoped to the exact incoming name -- a different near-miss name still gets suggested', async () => {
+  const store = makeStore({ 'circle/people.tsv': [{ ID: 'taylor', NAME: 'Taylor Kariuki', LAST_TOUCH: '-' }] });
+  const client = createChatImportClient({ ...store });
+  await client.dismissMatchSuggestion({ speaker: 'Tayler Kariuki', personId: 'taylor' });
+
+  const text = '28/07/2026, 09:40 - Tailor Kariuki: hey there'; // a DIFFERENT typo'd spelling, not a substring either way
+  const imported = await client.importChat({ content: Buffer.from(text, 'utf8').toString('base64'), fileName: 'chat.txt' });
+  assert.equal(imported.unmatched[0].suggestions[0].personId, 'taylor');
+});
+
 test('importChat persists interleaved in/out messages to scope/inbox.tsv, PERSON_ID/DIRECTION tagged, for the matched person', async () => {
   const store = makeStore({ 'circle/people.tsv': [{ ID: 'taylor', NAME: 'Taylor Kariuki', LAST_TOUCH: '-' }] });
   const client = createChatImportClient({ ...store });

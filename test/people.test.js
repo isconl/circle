@@ -77,6 +77,32 @@ test('upsertPerson triggers DIA generation and marks the circle analysis dirty f
   assert.equal(dirty, true);
 });
 
+// BM26091204: TAGS is kept in lockstep with GROUP until the tag-management
+// UI exists (this row's own Step 4) -- no caller passes p.tags yet.
+test('upsertPerson creates a new person with TAGS set from GROUP', async () => {
+  const store = makeStore();
+  const client = createPeopleClient({ ...store });
+  await client.upsertPerson({ name: 'Taylor Kariuki', group: 'Viva' });
+  assert.equal(store.data['circle/people.tsv'][0].GROUP, 'Viva');
+  assert.equal(store.data['circle/people.tsv'][0].TAGS, 'Viva');
+});
+
+test('upsertPerson updates GROUP on an existing person and keeps TAGS matching it', async () => {
+  const store = makeStore({ 'circle/people.tsv': [{ ID: 'taylor', NAME: 'Taylor', GROUP: 'Old Co', TAGS: 'Old Co' }] });
+  const client = createPeopleClient({ ...store });
+  await client.upsertPerson({ id: 'taylor', name: 'Taylor', group: 'New Co' });
+  assert.equal(store.data['circle/people.tsv'][0].GROUP, 'New Co');
+  assert.equal(store.data['circle/people.tsv'][0].TAGS, 'New Co');
+});
+
+test('upsertPerson honours an explicit p.tags over GROUP when both are given', async () => {
+  const store = makeStore();
+  const client = createPeopleClient({ ...store });
+  await client.upsertPerson({ name: 'Taylor Kariuki', group: 'Viva', tags: 'vip, mentor' });
+  assert.equal(store.data['circle/people.tsv'][0].GROUP, 'Viva');
+  assert.equal(store.data['circle/people.tsv'][0].TAGS, 'vip, mentor');
+});
+
 test('setRemember stores a semicolon-joined list and clears with an empty list', async () => {
   const store = makeStore({ 'circle/people.tsv': [{ ID: 'taylor', REMEMBER: '-' }] });
   const client = createPeopleClient({ ...store });

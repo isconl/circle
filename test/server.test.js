@@ -146,6 +146,42 @@ test('people: create, list, touch, remember', async () => {
   } finally { server.close(); cleanup(); }
 });
 
+test('BM26091204 step 4: tags-management routes -- add, list, rename, merge, delete', async () => {
+  const { server, port, cleanup } = await startServer();
+  const auth = { Authorization: 'Bearer test-static-token', 'Content-Type': 'application/json' };
+  try {
+    const create = await fetch(`http://127.0.0.1:${port}/people`, { method: 'POST', headers: auth,
+      body: JSON.stringify({ name: 'Taylor Kariuki', group: 'Viva' }) });
+    const { id } = await create.json();
+
+    await fetch(`http://127.0.0.1:${port}/tags/add`, { method: 'POST', headers: auth,
+      body: JSON.stringify({ personId: id, tag: 'vip' }) });
+
+    const tags1 = await (await fetch(`http://127.0.0.1:${port}/tags`, { headers: auth })).json();
+    assert.deepEqual(new Set(tags1.tags.map(t => t.tag)), new Set(['Viva', 'vip']));
+    assert.ok(tags1.tags.every(t => t.count === 1));
+
+    const rename = await fetch(`http://127.0.0.1:${port}/tags/rename`, { method: 'POST', headers: auth,
+      body: JSON.stringify({ from: 'Viva', to: 'Viva Team' }) });
+    assert.equal((await rename.json()).touched, 1);
+
+    const del = await fetch(`http://127.0.0.1:${port}/tags/delete`, { method: 'POST', headers: auth,
+      body: JSON.stringify({ tag: 'vip' }) });
+    assert.equal((await del.json()).touched, 1);
+
+    const tags2 = await (await fetch(`http://127.0.0.1:${port}/tags`, { headers: auth })).json();
+    assert.deepEqual(tags2.tags, [{ tag: 'Viva Team', count: 1 }]);
+  } finally { server.close(); cleanup(); }
+});
+
+test('tags routes require auth, same as every other non-public route', async () => {
+  const { server, port, cleanup } = await startServer();
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/tags`);
+    assert.equal(res.status, 404);
+  } finally { server.close(); cleanup(); }
+});
+
 test('FM26082801: POST /people/:id/regenerate-dia is reachable and resolves the person before calling spark', async () => {
   const { server, port, cleanup } = await startServer();
   const auth = { Authorization: 'Bearer test-static-token', 'Content-Type': 'application/json' };

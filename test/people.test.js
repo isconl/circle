@@ -117,6 +117,83 @@ test('setRemember throws for an unknown person', async () => {
   await assert.rejects(() => client.setRemember({ id: 'nope', remember: ['x'] }));
 });
 
+// BM26091204 step 4: tags-management -- listTags/addTag/removeTag/renameTag/mergeTags/deleteTag.
+test('listTags counts distinct tags across all contacts, most-used first', async () => {
+  const store = makeStore({ 'circle/people.tsv': [
+    { ID: 'a', TAGS: 'Viva, vip' },
+    { ID: 'b', TAGS: 'Viva' },
+    { ID: 'c', TAGS: '-' },
+  ] });
+  const client = createPeopleClient({ ...store });
+  assert.deepEqual(await client.listTags(), [{ tag: 'Viva', count: 2 }, { tag: 'vip', count: 1 }]);
+});
+
+test('addTag appends to an existing TAGS list without duplicating', async () => {
+  const store = makeStore({ 'circle/people.tsv': [{ ID: 'taylor', TAGS: 'Viva' }] });
+  const client = createPeopleClient({ ...store });
+  await client.addTag('taylor', 'vip');
+  assert.equal(store.data['circle/people.tsv'][0].TAGS, 'Viva, vip');
+  await client.addTag('taylor', 'Viva');
+  assert.equal(store.data['circle/people.tsv'][0].TAGS, 'Viva, vip');
+});
+
+test('addTag throws for an unknown person or an empty tag', async () => {
+  const client = createPeopleClient({ ...makeStore() });
+  await assert.rejects(() => client.addTag('nope', 'vip'));
+  await assert.rejects(() => client.addTag('taylor', '  '));
+});
+
+test('removeTag drops one tag from one person only, leaving others untouched', async () => {
+  const store = makeStore({ 'circle/people.tsv': [
+    { ID: 'a', TAGS: 'Viva, vip' },
+    { ID: 'b', TAGS: 'Viva' },
+  ] });
+  const client = createPeopleClient({ ...store });
+  await client.removeTag('a', 'vip');
+  assert.equal(store.data['circle/people.tsv'][0].TAGS, 'Viva');
+  assert.equal(store.data['circle/people.tsv'][1].TAGS, 'Viva');
+});
+
+test('renameTag rewrites the tag on every contact that carries it, and dedupes if the target already exists', async () => {
+  const store = makeStore({ 'circle/people.tsv': [
+    { ID: 'a', TAGS: 'Old Co' },
+    { ID: 'b', TAGS: 'Old Co, New Co' },
+    { ID: 'c', TAGS: 'unrelated' },
+  ] });
+  const client = createPeopleClient({ ...store });
+  const r = await client.renameTag('Old Co', 'New Co');
+  assert.equal(r.touched, 2);
+  assert.equal(store.data['circle/people.tsv'][0].TAGS, 'New Co');
+  assert.equal(store.data['circle/people.tsv'][1].TAGS, 'New Co');
+  assert.equal(store.data['circle/people.tsv'][2].TAGS, 'unrelated');
+});
+
+test('mergeTags folds multiple source tags into one target across every contact', async () => {
+  const store = makeStore({ 'circle/people.tsv': [
+    { ID: 'a', TAGS: 'Viva' },
+    { ID: 'b', TAGS: 'Viva Team' },
+    { ID: 'c', TAGS: 'unrelated' },
+  ] });
+  const client = createPeopleClient({ ...store });
+  const r = await client.mergeTags(['Viva', 'Viva Team'], 'Viva');
+  assert.equal(r.touched, 2);
+  assert.equal(store.data['circle/people.tsv'][0].TAGS, 'Viva');
+  assert.equal(store.data['circle/people.tsv'][1].TAGS, 'Viva');
+  assert.equal(store.data['circle/people.tsv'][2].TAGS, 'unrelated');
+});
+
+test('deleteTag removes a tag from every contact that carries it', async () => {
+  const store = makeStore({ 'circle/people.tsv': [
+    { ID: 'a', TAGS: 'Viva, vip' },
+    { ID: 'b', TAGS: 'vip' },
+  ] });
+  const client = createPeopleClient({ ...store });
+  const r = await client.deleteTag('vip');
+  assert.equal(r.touched, 2);
+  assert.equal(store.data['circle/people.tsv'][0].TAGS, 'Viva');
+  assert.equal(store.data['circle/people.tsv'][1].TAGS, '-');
+});
+
 test('logTouch stamps LAST_TOUCH and records an interaction row', async () => {
   const store = makeStore({ 'circle/people.tsv': [{ ID: 'taylor', LAST_TOUCH: '-' }] });
   const client = createPeopleClient({ ...store });

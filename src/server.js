@@ -220,6 +220,32 @@ async function main() {
           interactions: interactions.filter(i => i.PERSON_ID === personId),
         }));
       }
+      // BM26091204 step 4: tags-management -- listing plus the four
+      // operations a tag-management UI needs (create is implicit in
+      // add: a tag "exists" exactly where it's attached to a contact).
+      if (pathname === '/tags' && req.method === 'GET') {
+        return sendJson(res, 200, { tags: await people.listTags() });
+      }
+      if (pathname === '/tags/add' && req.method === 'POST') {
+        const b = JSON.parse(await readBody(req) || '{}');
+        return sendJson(res, 200, await people.addTag(b.personId, b.tag));
+      }
+      if (pathname === '/tags/remove' && req.method === 'POST') {
+        const b = JSON.parse(await readBody(req) || '{}');
+        return sendJson(res, 200, await people.removeTag(b.personId, b.tag));
+      }
+      if (pathname === '/tags/rename' && req.method === 'POST') {
+        const b = JSON.parse(await readBody(req) || '{}');
+        return sendJson(res, 200, await people.renameTag(b.from, b.to));
+      }
+      if (pathname === '/tags/merge' && req.method === 'POST') {
+        const b = JSON.parse(await readBody(req) || '{}');
+        return sendJson(res, 200, await people.mergeTags(b.sources, b.into));
+      }
+      if (pathname === '/tags/delete' && req.method === 'POST') {
+        const b = JSON.parse(await readBody(req) || '{}');
+        return sendJson(res, 200, await people.deleteTag(b.tag));
+      }
       if (pathname === '/analysis' && req.method === 'GET') {
         return sendJson(res, 200, people.readAnalysis());
       }

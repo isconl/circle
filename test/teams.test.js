@@ -1,7 +1,7 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { createTeamsClient, SPAN_LIMIT, DEPTH_GREEN } = require('../lib/teams');
+const { createTeamsClient, SPAN_LIMIT, DEPTH_GREEN, FORCES } = require('../lib/teams');
 
 function memoryStore() {
   const db = new Map();
@@ -88,4 +88,62 @@ test('Teams client - team creation, member management, work queue, and move tran
   const snap2 = await teams.snapshot();
   assert.equal(snap2.teams[0].work[0].status, 'signed');
   assert.equal(snap2.teams[0].counts.signedWeek, 1);
+});
+
+test('BM26091502 - force model: six slots always, covered/doubled/missing, Architect is a flag not a seventh force', async () => {
+  const store = memoryStore();
+  const teams = createTeamsClient(store);
+  assert.deepEqual(FORCES, ['captain', 'strategist', 'operator', 'warrior', 'scout', 'guardian']);
+
+  const t = await teams.saveTeam({ title: 'Force Test' });
+  const captain = await teams.saveMember({ teamId: t.id, name: 'Ada', forcePrimary: 'captain' });
+  assert.ok(captain.success);
+  const doubleGuardian1 = await teams.saveMember({ teamId: t.id, name: 'Ben', forcePrimary: 'guardian' });
+  const doubleGuardian2 = await teams.saveMember({ teamId: t.id, name: 'Cy', forcePrimary: 'guardian', forceSecondary: 'scout' });
+  const architectOnly = await teams.saveMember({ teamId: t.id, name: 'Dee', isArchitect: true });
+
+  const snap = await teams.snapshot();
+  const forces = snap.teams[0].forces;
+  assert.deepEqual(forces.forces, FORCES);
+  assert.deepEqual(forces.covered.sort(), ['captain', 'scout'].sort());
+  assert.deepEqual(forces.doubled, ['guardian']);
+  assert.deepEqual(forces.missing.sort(), ['strategist', 'operator', 'warrior'].sort());
+  assert.equal(forces.holders.guardian.length, 2);
+  assert.equal(forces.architects.length, 1);
+  assert.equal(forces.architects[0].name, 'Dee');
+  // Architect never leaks into the six-force enum -- an architect-only
+  // member with no force assigned contributes nothing to holders/covered.
+  assert.ok(!Object.keys(forces.holders).includes('architect'));
+
+  const m = snap.teams[0].members.find(mm => mm.id === architectOnly.id);
+  assert.equal(m.isArchitect, true);
+  assert.equal(m.forcePrimary, '');
+});
+
+test('BM26091502 - force assignment rejects an unknown force and a force doubled as its own secondary', async () => {
+  const store = memoryStore();
+  const teams = createTeamsClient(store);
+  const t = await teams.saveTeam({ title: 'Force Validation' });
+
+  await assert.rejects(
+    teams.saveMember({ teamId: t.id, name: 'Eve', forcePrimary: 'wizard' }),
+    /must be one of/
+  );
+  await assert.rejects(
+    teams.saveMember({ teamId: t.id, name: 'Fay', forcePrimary: 'scout', forceSecondary: 'scout' }),
+    /same force as both primary and secondary/
+  );
+
+  // A later partial edit that only touches forceSecondary must not be
+  // allowed to collide with the existing forcePrimary either.
+  const g = await teams.saveMember({ teamId: t.id, name: 'Gia', forcePrimary: 'warrior' });
+  await assert.rejects(
+    teams.saveMember({ id: g.id, teamId: t.id, forceSecondary: 'warrior' }),
+    /same force as both primary and secondary/
+  );
+
+  // Force is case-insensitive on the way in.
+  const h = await teams.saveMember({ teamId: t.id, name: 'Hal', forcePrimary: 'STRATEGIST' });
+  const snap = await teams.snapshot();
+  assert.equal(snap.teams[0].members.find(mm => mm.id === h.id).forcePrimary, 'strategist');
 });

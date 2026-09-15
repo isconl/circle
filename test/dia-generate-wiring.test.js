@@ -35,8 +35,12 @@ const SECTIONS = {
   personalityInferred: [{ text: 'Detail-oriented', basis: 'follow-up questions pattern' }],
 };
 
-test('writeDiaFile starts from the SDIAIF v2.1 skeleton when no dossier exists yet', async () => {
+test('writeDiaFile starts from the SDIAIF v2.1 skeleton for a genuinely new person, when the corpus itself is populated', async () => {
   const diaDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dia-test-'));
+  // FI26091402: a real dossier corpus with at least one other file present --
+  // distinguishes "brand-new person, real corpus" from "empty corpus, never
+  // mirrored from the live vault" (covered by the refusal test below).
+  fs.writeFileSync(path.join(diaDir, 'someone-else.md'), '# DIA -- Someone Else\n');
   const client = makeClient(diaDir, { 'circle/people.tsv': [{ ID: 'p1', NAME: 'Test Person' }] });
   const result = await client.writeDiaFile('p1', SECTIONS);
   assert.ok(result.success);
@@ -88,6 +92,25 @@ test('writeDiaFile splices into an existing dossier without touching other secti
   assert.doesNotMatch(content, /old strength/);
   assert.doesNotMatch(content, /old weakness/);
   assert.doesNotMatch(content, /old trait/);
+});
+
+test('FI26091402: writeDiaFile refuses when diaDir has zero .md files -- an empty corpus never mirrored from the live vault, not a legit new person', async () => {
+  const diaDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dia-test-'));
+  const client = makeClient(diaDir, { 'circle/people.tsv': [{ ID: 'p1', NAME: 'Test Person' }] });
+  await assert.rejects(
+    () => client.writeDiaFile('p1', SECTIONS),
+    /refusing to generate a dossier/
+  );
+  assert.equal(fs.existsSync(path.join(diaDir, 'p1.md')), false);
+});
+
+test('FI26091402: writeDiaFile refuses the same way when diaDir does not exist at all', async () => {
+  const diaDir = path.join(os.tmpdir(), 'dia-test-missing-' + Date.now());
+  const client = makeClient(diaDir, { 'circle/people.tsv': [{ ID: 'p1', NAME: 'Test Person' }] });
+  await assert.rejects(
+    () => client.writeDiaFile('p1', SECTIONS),
+    /refusing to generate a dossier/
+  );
 });
 
 test('currentDiaSections returns the joined 3.2/3.3/3.4 text for an existing dossier', async () => {

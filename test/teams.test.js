@@ -147,3 +147,54 @@ test('BM26091502 - force assignment rejects an unknown force and a force doubled
   const snap = await teams.snapshot();
   assert.equal(snap.teams[0].members.find(mm => mm.id === h.id).forcePrimary, 'strategist');
 });
+
+test('BM26091503 - Architect diagnosis: unstaffed, healthy, quiet, corrupted, and quiet+corrupted, all from real work.tsv state', async () => {
+  const store = memoryStore();
+  const teams = createTeamsClient(store);
+  const t = await teams.saveTeam({ title: 'Architect Test' });
+
+  // captain: signed work this cycle -> healthy.
+  const captain = await teams.saveMember({ teamId: t.id, name: 'Ada', forcePrimary: 'captain' });
+  const w1 = await teams.saveWork({ teamId: t.id, memberId: captain.id, title: 'Ship it', why: 'w', due: '2026-12-01', doneMeans: 'done' });
+  await teams.moveWork({ id: w1.id, to: 'active' });
+  await teams.moveWork({ id: w1.id, to: 'finished' });
+  await teams.moveWork({ id: w1.id, to: 'signed' });
+
+  // strategist: holds the force but has done nothing finished -> quiet.
+  const strategist = await teams.saveMember({ teamId: t.id, name: 'Ben', forcePrimary: 'strategist' });
+  await teams.saveWork({ teamId: t.id, memberId: strategist.id, title: 'Still queued', why: 'w', due: '2026-12-01', doneMeans: 'done' });
+
+  // operator: has a blocked item and nothing signed -> quiet+corrupted.
+  const operator = await teams.saveMember({ teamId: t.id, name: 'Cy', forcePrimary: 'operator' });
+  const w3 = await teams.saveWork({ teamId: t.id, memberId: operator.id, title: 'Stuck', why: 'w', due: '2026-12-01', doneMeans: 'done' });
+  await teams.moveWork({ id: w3.id, to: 'blocked', note: 'waiting on X' });
+
+  // warrior: signed work AND a separate blocked item -> corrupted (not quiet, since something shipped).
+  const warrior = await teams.saveMember({ teamId: t.id, name: 'Dee', forcePrimary: 'warrior' });
+  const w4a = await teams.saveWork({ teamId: t.id, memberId: warrior.id, title: 'Shipped one', why: 'w', due: '2026-12-01', doneMeans: 'done' });
+  await teams.moveWork({ id: w4a.id, to: 'active' });
+  await teams.moveWork({ id: w4a.id, to: 'finished' });
+  await teams.moveWork({ id: w4a.id, to: 'signed' });
+  const w4b = await teams.saveWork({ teamId: t.id, memberId: warrior.id, title: 'Also stuck', why: 'w', due: '2026-12-01', doneMeans: 'done' });
+  await teams.moveWork({ id: w4b.id, to: 'blocked' });
+
+  // scout and guardian: no holders at all -> unstaffed.
+
+  const snap = await teams.snapshot();
+  const d = snap.teams[0].architect;
+  assert.equal(d.captain.status, 'healthy');
+  assert.equal(d.strategist.status, 'quiet');
+  assert.equal(d.operator.status, 'quiet+corrupted');
+  assert.equal(d.warrior.status, 'corrupted');
+  assert.equal(d.scout.status, 'unstaffed');
+  assert.equal(d.guardian.status, 'unstaffed');
+  assert.deepEqual(d.captain.holders, ['Ada']);
+  assert.equal(d.scout.holders.length, 0);
+
+  // A member holding a force as SECONDARY still counts as a holder for
+  // diagnosis, same as coverage does.
+  const guardianSecondary = await teams.saveMember({ teamId: t.id, name: 'Eve', forceSecondary: 'guardian' });
+  const snap2 = await teams.snapshot();
+  assert.equal(snap2.teams[0].architect.guardian.status, 'quiet');
+  assert.deepEqual(snap2.teams[0].architect.guardian.holders, ['Eve']);
+});
